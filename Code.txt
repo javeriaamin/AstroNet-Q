@@ -2,15 +2,14 @@ import os
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
-from tensorflow.keras.preprocessing.image import ImageDataGenerator, img_to_array, load_img
-from tensorflow.keras.utils import array_to_img
+from tensorflow.keras.preprocessing.image import img_to_array, load_img
+from tensorflow.keras.callbacks import EarlyStopping
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import confusion_matrix
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pennylane as qml
 from pennylane.templates import RandomLayers
-from PIL import UnidentifiedImageError, Image
 from multiprocessing import Pool  # For parallel processing
 import torch
 
@@ -35,7 +34,7 @@ def load_images_from_folder(folder_path):
         
         for img_name in os.listdir(class_path):
             img_path = os.path.join(class_path, img_name)
-            if os.path.isfile(img_path) and img_path.endswith(('.png', '.jpg', '.jpeg')):  # Ensure it's a file
+            if os.path.isfile(img_path) and img_path.endswith(('.png', '.jpg', '.jpeg')):  
                 img = load_img(img_path, target_size=IMG_SIZE, color_mode="grayscale")
                 img_array = img_to_array(img) / 255.0  # Normalize pixels
                 images.append(img_array)
@@ -82,7 +81,7 @@ def process_images_parallel(images):
 
 def plot_images(original, quantum, index=0, save_path=OUTPUT_DIR):
     """Save comparison images (original vs. quantum processed)"""
-    os.makedirs(save_path, exist_ok=True)  # Create the directory if it doesn't exist
+    os.makedirs(save_path, exist_ok=True)
     fig, axes = plt.subplots(1, 2, figsize=(8, 4))
 
     # Original Image
@@ -91,34 +90,33 @@ def plot_images(original, quantum, index=0, save_path=OUTPUT_DIR):
     axes[0].axis("off")
 
     # Quantum Processed Image
-    quantum_img = quantum[index].reshape(14, 14, N_WIRES).mean(axis=-1)  # Average over wires
+    quantum_img = quantum[index].reshape(14, 14, N_WIRES).mean(axis=-1)
     axes[1].imshow(quantum_img, cmap="inferno")
     axes[1].set_title("Quantum Processed")
     axes[1].axis("off")
 
-    # Save the figure
+    # Save
     save_file = os.path.join(save_path, f"comparison_{index}.png")
     plt.savefig(save_file, bbox_inches="tight", dpi=300)
-    plt.close(fig)  # Close the figure to free memory
+    plt.close(fig)
+
 
 # -------------------------------
 # MAIN PROCESS
 # -------------------------------
-if __name__ == "__main__":
+if _name_ == "_main_":
     print("Starting augmentation process...")
 
-    # Perform data augmentation for each class if not done
+    # Data Augmentation
     for class_name in os.listdir(ORIGINAL_DATA_PATH):
         class_dir = os.path.join(ORIGINAL_DATA_PATH, class_name)
         if not os.path.isdir(class_dir):
             continue
         
-        # Create output class directory for augmented images
         output_class_dir = os.path.join(AUGMENTED_DATA_PATH, class_name)
         if not os.path.exists(output_class_dir):
             os.makedirs(output_class_dir)
         
-        # Check if augmentation is needed
         if len(os.listdir(output_class_dir)) < TOTAL_IMAGES_PER_CLASS:
             print(f"Augmenting images for class: {class_name}")
             augment_and_save_images(class_dir, class_name, output_class_dir)
@@ -127,32 +125,32 @@ if __name__ == "__main__":
 
     print(f"Data augmentation complete. Augmented images saved to: {AUGMENTED_DATA_PATH}")
 
-    # Load dataset from augmented images
+    # Load dataset
     images, labels, class_names = load_images_from_folder(AUGMENTED_DATA_PATH)
     num_classes = len(class_names)
 
-    # Split into train and test
+    # Split train/test
     train_images, test_images, train_labels, test_labels = train_test_split(
         images, labels, test_size=TEST_SPLIT, stratify=labels, random_state=42
     )
 
-    # Reshape for compatibility
+    # Reshape
     train_images = train_images.reshape(-1, 28, 28, 1)
     test_images = test_images.reshape(-1, 28, 28, 1)
 
-    # Apply quantum convolution to training and testing images
+    # Quantum convolution
     print("Processing training images with quantum convolution...")
     q_train_images = process_images_parallel(train_images)
 
     print("Processing test images with quantum convolution...")
     q_test_images = process_images_parallel(test_images)
 
-    # Save comparison images (original vs. quantum-processed)
+    # Save sample comparisons
     print("Saving comparison images (original vs. quantum processed)...")
     for i in range(5):
         plot_images(train_images, q_train_images, index=i)
 
-    # Build CNN Model
+    # CNN Model
     model = keras.Sequential([
         keras.layers.Conv2D(32, (3, 3), activation="relu", input_shape=(14, 14, N_WIRES)),
         keras.layers.MaxPooling2D((2, 2)),
@@ -163,21 +161,32 @@ if __name__ == "__main__":
         keras.layers.Dense(num_classes, activation="softmax")
     ])
 
-    # Compile model
+    # Compile
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
         loss="sparse_categorical_crossentropy",
         metrics=["accuracy"]
     )
 
-    # Train model
+    # -------------------------------
+    # TRAIN MODEL WITH EARLY STOPPING
+    # -------------------------------
     print("Training model...")
+
+    early_stopping = EarlyStopping(
+        monitor="val_loss",
+        patience=10,   # agar 10 epochs tak improvement na ho to stop
+        restore_best_weights=True,
+        verbose=1
+    )
+
     history = model.fit(
         q_train_images, train_labels,
         validation_data=(q_test_images, test_labels),
-        epochs=10,
+        epochs=100,        # Max 100 epochs
         batch_size=32,
-        verbose=2
+        verbose=2,
+        callbacks=[early_stopping]
     )
 
     # Save model
@@ -188,7 +197,7 @@ if __name__ == "__main__":
     y_pred = np.argmax(model.predict(q_test_images), axis=1)
     conf_matrix = confusion_matrix(test_labels, y_pred)
 
-    # Save confusion matrix plot
+    # Save confusion matrix
     plt.figure(figsize=(8, 6))
     sns.heatmap(conf_matrix, annot=True, fmt="d", cmap="Blues", xticklabels=class_names, yticklabels=class_names)
     plt.xlabel("Predicted")
@@ -198,4 +207,3 @@ if __name__ == "__main__":
     plt.savefig(confusion_matrix_save_path, bbox_inches="tight", dpi=300)
     plt.close()
     print(f"Confusion matrix saved to {confusion_matrix_save_path}")
-
